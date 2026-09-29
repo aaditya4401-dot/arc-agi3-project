@@ -1,0 +1,7 @@
+{
+    "game_id": "lt01-local",
+    "title": "Local test: click the lights off",
+    "tags": ["dev"],
+    "baseline_actions": [3, 6],
+    "date_downloaded": "2026-09-29T00:00:00Z"
+}

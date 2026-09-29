@@ -1,0 +1,7 @@
+{
+    "game_id": "mz01-local",
+    "title": "Local test maze (from the ARCEngine simple_maze example)",
+    "tags": ["dev"],
+    "baseline_actions": [12, 40],
+    "date_downloaded": "2026-09-29T00:00:00Z"
+}
