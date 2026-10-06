@@ -1,0 +1,16 @@
+{
+  "fallback_tokens": 45924.98353694247,
+  "by_level": {
+    "1": 27011.05963663083,
+    "2": 51072.88442280241,
+    "3": 48932.24773612239,
+    "4": 56352.32702962253,
+    "5": 55796.95578535604,
+    "6": 67264.12383313512,
+    "7": 40699.37351375245,
+    "8": 22696.312661663567
+  },
+  "method": "Kaplan-Meier restricted mean token cost, capped at 120000 tokens",
+  "training": "1417 reached-level episodes from historical transcripts; pooled by level number, no game identity at inference",
+  "limitations": "Historical config differs from current config. Reference is a bounded cost scale, not an unbiased uncapped completion time. Last survival value carried to cap beyond observed support."
+}
