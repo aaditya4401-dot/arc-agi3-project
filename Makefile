@@ -20,7 +20,7 @@ COMP_SLUG       := arc-prize-2026-arc-agi-3
 GAME            ?=
 STEPS           ?= 200
 
-.PHONY: help setup play-local play-dev pull-sample notebook submit status verify-local clean _check-kaggle
+.PHONY: help setup play-local play-dev pull-sample notebook submit status verify-local clean _check-kaggle solver-notebook solver-push solver-status
 
 _check-kaggle:
 	@if [ ! -s .kaggle/access_token ]; then \
@@ -82,6 +82,16 @@ submit: notebook _check-kaggle ## Build notebook and push to Kaggle (one-line su
 status: _check-kaggle ## Show the status of your most recent Kaggle kernel run
 	@KERNEL_ID=$$(python3 -c "import json; print(json.load(open('notebooks/kernel-metadata.json'))['id'])"); \
 	$(KAGGLE) kernels status $$KERNEL_ID
+
+solver-notebook: ## Build notebooks/solver-kernel/ from solver/ (FULL=1 keeps the ~8 h practice run)
+	$(VENV_PY) scripts/build_solver_notebook.py $(if $(FULL),--full-practice)
+
+solver-push: solver-notebook _check-kaggle ## Build and push solver/ to Kaggle as a new version of ARC-AGI-3 Solver
+	$(KAGGLE) kernels push -p notebooks/solver-kernel
+
+solver-status: _check-kaggle ## Status of the latest ARC-AGI-3 Solver run, plus recent submissions
+	@$(KAGGLE) kernels status sriranganada/arc-agi-3-solver
+	@$(KAGGLE) competitions submissions $(COMP_SLUG) | head -6
 
 clean: ## Remove generated artefacts (venv, downloaded games, vendored repos)
 	rm -rf $(VENV) vendor environment_files recordings notebooks/submission.ipynb \

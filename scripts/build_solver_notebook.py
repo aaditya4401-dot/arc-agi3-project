@@ -5,7 +5,8 @@ code untouched, plus one big patch (cell 2) that turns it into his solver.
 On Kaggle the patch is applied with `git apply` before anything runs.
 
 This script rebuilds that patch so it turns the Duck into our `solver/`
-instead, and writes `notebooks/solver-submission.ipynb`. Every other cell
+instead, and writes `notebooks/solver-kernel/solver-submission.ipynb`, next to
+the kernel-metadata.json (inputs + RTX Pro 6000) that `kaggle kernels push` needs. Every other cell
 (model, serving, settings) stays exactly as Franzen had it, except that by
 default the practice run ("Save & Run All", not scored) is cut from ~8 hours
 (25 games x 4 passes) to ~15 minutes (2 games x 1 pass). The scored
@@ -30,7 +31,7 @@ DUCK_REPO = ROOT / "reference" / "duck-harness"
 DUCK_COMMIT = "7652836"  # the Duck commit Franzen's patch is based on
 PATCHED_DIR = "ARC3-Inference/inference"  # Franzen's patch only touches this folder
 BASE_NOTEBOOK = ROOT / "solver" / "base-notebook.ipynb"
-OUT_NOTEBOOK = ROOT / "notebooks" / "solver-submission.ipynb"
+OUT_NOTEBOOK = ROOT / "notebooks" / "solver-kernel" / "solver-submission.ipynb"
 PATCH_CELL = 2
 PATCH_HEADER = "%%writefile /kaggle/harness-changes.patch\n"
 SETTINGS_CELL = 16
