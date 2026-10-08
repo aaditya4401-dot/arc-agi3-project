@@ -20,3 +20,5 @@ reference/
 .DS_Store
 .idea/
 .vscode/
+notebooks/solver-submission.ipynb
+runs/
