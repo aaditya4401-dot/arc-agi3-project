@@ -29,6 +29,7 @@ from inference.utils.animation import (
     normalize_frames,
     summarize_animation,
 )
+from inference.agent import auto_probe
 from inference.agent.action_names import (
     reset_exposed,
     to_engine_action,
@@ -649,6 +650,8 @@ class _HarnessGameSession:
                 run.game_id,
             )
             self._execute_auto_reset()
+        if auto_probe.ENABLED:
+            self._run_auto_probe()
         try:
             retry_analysis_step: int | None = None
             consecutive_failures = 0
@@ -1230,6 +1233,45 @@ class _HarnessGameSession:
         self._execute_action(
             action, batch_index=1, batch_size=1, generated_tokens=0, automatic=True
         )
+
+    def _run_auto_probe(self) -> None:
+        """Before the model's first turn, try each control once on level 1.
+
+        See inference.agent.auto_probe. The actions go through _execute_action,
+        so they land in `history` like any other (marked automatic) and count
+        toward the level. The report is handed to the analyzer for its openers.
+        Fails open: a probe error must never cost the game.
+        """
+        if _level_number(self.game) != 1 or self.should_stop() or _is_engine_game_over(self.game):
+            return
+
+        def execute(action: str, row: int | None, col: int | None) -> dict[str, Any] | None:
+            engine_name = to_engine_action(action)
+            if engine_name is None or self.should_stop():
+                return None
+            action_id = arcengine.GameAction.from_name(engine_name)
+            if action_id.value not in self.game.current_state.available_actions:
+                return None
+            data = {"x": col, "y": row} if action_id == arcengine.GameAction.ACTION6 else {}
+            payload = self._execute_action(
+                arcengine.ActionInput(id=action_id, data=data),
+                batch_index=1, batch_size=1, generated_tokens=0, automatic=True,
+            )
+            return {**payload, "grid": _grid_from_state(self.game.current_state)}
+
+        try:
+            steps = auto_probe.run_probe(
+                _grid_from_state(self.game.current_state),
+                to_model_actions(_engine_action_names(self.game)),
+                execute,
+            )
+            self.analyzer.auto_probe_lines = auto_probe.render_report(steps)
+            self.analyzer.auto_probe_level = _level_number(self.game)
+        except Exception:
+            log.warning(
+                "%s: auto-probe failed; playing on without it",
+                getattr(self.game.game_run, "game_id", "?"), exc_info=True,
+            )
 
     def _execute_action(
         self,

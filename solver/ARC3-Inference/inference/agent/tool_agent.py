@@ -4803,6 +4803,26 @@ class ToolAgent:
             lines.append(f"Current state: step {step}, level {level}.")
         return lines
 
+    def _auto_probe_report_lines(self, current_level: int) -> list[str]:
+        """The solver's level-1 probe table (see auto_probe), while that level lasts.
+
+        Shown only when it is not already in the retained history: once in the
+        first opener, and again if eviction or a rolled-back turn removed it.
+        A shown-once flag would lose it on either.
+        """
+        report = getattr(self, "auto_probe_lines", None)
+        if not report or current_level > getattr(self, "auto_probe_level", 1):
+            return []
+        marker = report[0][:60]
+        for message in self._history_messages:
+            content = message.get("content")
+            parts = content if isinstance(content, list) else [content]
+            for part in parts:
+                text = part.get("text") if isinstance(part, dict) else part
+                if isinstance(text, str) and marker in text:
+                    return []
+        return list(report)
+
     def _build_user_prompt(
         self,
         action_num: int,
@@ -5087,6 +5107,7 @@ class ToolAgent:
                 f"Valid actions right now: {_format_valid_action_line(valid_actions)}.",
             ]
         )
+        lines.extend(self._auto_probe_report_lines(current_level))
         # recording is independent of display: the guard needs the ledger even
         # when the advisory lines are switched off
         self._death_ledger_observe(history_entries, previous_step_summary)
