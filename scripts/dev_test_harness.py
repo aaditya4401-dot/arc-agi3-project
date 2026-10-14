@@ -182,6 +182,8 @@ def main() -> None:
     p.add_argument("--game", default="ls20")
     p.add_argument("--actions", type=int, default=60)
     p.add_argument("--set", action="append", default=[], metavar="KEY=VALUE")
+    p.add_argument("--outage", metavar="AFTER_REQ:SECONDS",
+                   help="Take the fake server down after N requests for S seconds (server-crash drill).")
     p.add_argument("--child", help=argparse.SUPPRESS)
     args = p.parse_args()
 
@@ -192,23 +194,40 @@ def main() -> None:
 
     out_dir = Path(tempfile.mkdtemp(prefix=f"devtest-{args.label}-"))
     FakeModel.log_path = out_dir / "requests.jsonl"
+    ThreadingHTTPServer.allow_reuse_address = True
     server = ThreadingHTTPServer(("127.0.0.1", 0), FakeModel)
+    port = server.server_port
     threading.Thread(target=server.serve_forever, daemon=True).start()
+    servers = [server]
+    if args.outage:
+        after, seconds = (float(x) for x in args.outage.split(":"))
+
+        def drill():
+            while not FakeModel.log_path.exists() or len(FakeModel.log_path.read_text().splitlines()) < after:
+                time.sleep(0.05)
+            servers[0].shutdown(); servers[0].server_close()
+            print(f"   [drill] fake server DOWN after {int(after)} requests, for {seconds:.0f}s", flush=True)
+            time.sleep(seconds)
+            servers[0] = ThreadingHTTPServer(("127.0.0.1", port), FakeModel)
+            threading.Thread(target=servers[0].serve_forever, daemon=True).start()
+            print("   [drill] fake server UP again", flush=True)
+
+        threading.Thread(target=drill, daemon=True).start()
 
     env = dict(os.environ)
     env.update(notebook_settings())
     env.update({k: str(v) for k, v in SCALED.items()})
-    env.update({"LOCAL_ANALYZER_BASE_URL": f"http://127.0.0.1:{server.server_port}/v1",
-                "OPENAI_BASE_URL": f"http://127.0.0.1:{server.server_port}/v1",
+    env.update({"LOCAL_ANALYZER_BASE_URL": f"http://127.0.0.1:{port}/v1",
+                "OPENAI_BASE_URL": f"http://127.0.0.1:{port}/v1",
                 "ARC3_HTTP_RETRY_INITIAL_SECONDS": "0", "ARC3_AUTO_PROBE": "off",
-                "DEV_TEST_PORT": str(server.server_port)})
+                "DEV_TEST_PORT": str(port)})
     for item in args.set:
         key, _, value = item.partition("=")
         env[key] = value
     proc = subprocess.run([sys.executable, __file__, "--label", args.label, "--game", args.game,
                            "--actions", str(args.actions), "--child", str(out_dir)],
                           env=env, capture_output=True, text=True)
-    server.shutdown()
+    servers[0].shutdown()
     line = next((l for l in proc.stdout.splitlines() if l.startswith("RESULT ")), None)
     if line is None:
         print(proc.stdout[-3000:], proc.stderr[-6000:], sep="\n")

@@ -18,6 +18,10 @@ Two options for experiments:
   --set KEY=VALUE  add/override a harness setting in the notebook's settings
                    block (cell 4, `setup_env`); repeatable
 
+Every build also adds a server watchdog (--no-watchdog to leave it out): if
+the model server dies mid-run it is restarted, and games wait for it instead
+of giving up. See WATCHDOG_CODE.
+
     [edit solver/...] → python scripts/build_solver_notebook.py → upload to Kaggle
 
 Needs the original Duck repo at `reference/duck-harness` (git clone of
@@ -63,6 +67,60 @@ QUICK_PRACTICE_EDITS = [
         "        bm.solver.max_runtime_s_per_game = 10*60  # quick practice\n",
     ),
 ]
+
+
+SERVER_CELL = 12  # Franzen's launcher: builds `args`/`env`, starts `proc`, waits for /health
+SERVER_CELL_MARKER = "proc = subprocess.Popen(args, env=env"
+
+# Games retry a dead endpoint (10 s backoff + HTTP retries), then give up after
+# ARC3_MAX_ANALYZER_FAILURES in a row: Franzen's 10 is ~4 minutes, but a
+# restart takes ~10 (weights, then CUDA graphs). 60 is ~25 minutes, still
+# bounded so a server that never returns cannot spin a game for hours.
+WATCHDOG_ENV = ["ARC3_MAX_ANALYZER_FAILURES=60"]
+
+# Appended to the launcher cell, so it runs after the server is up. The 2026-10-14
+# practice run lost its server to a SIGKILL 2h45m in (host-RAM spike) and every
+# game gave up within minutes; nothing restarted it.
+WATCHDOG_CODE = '''
+
+# ---- server watchdog (added by scripts/build_solver_notebook.py) ----
+import signal, threading
+
+WATCHDOG_MAX_RESTARTS = 3
+
+def _restart_server(reason):
+    global proc
+    print(f"[watchdog] model server {reason}; restarting", flush=True)
+    try:  # the launcher starts it in its own session: take every child with it
+        os.killpg(proc.pid, signal.SIGKILL)
+    except Exception:
+        pass
+    proc.wait()
+    time.sleep(15)  # let the GPU memory of the dead processes be released
+    with open(LOG, "ab", buffering=0) as logf:
+        proc = subprocess.Popen(args, env=env, stdout=logf, stderr=subprocess.STDOUT, start_new_session=True)
+    print(f"[watchdog] relaunched as pid {proc.pid}", flush=True)
+
+def _server_watchdog():
+    restarts = 0
+    while restarts < WATCHDOG_MAX_RESTARTS:
+        time.sleep(10)
+        if proc.poll() is None:
+            continue
+        restarts += 1
+        _restart_server(f"exited with code {proc.returncode} (restart {restarts}/{WATCHDOG_MAX_RESTARTS})")
+    print("[watchdog] restart limit reached; no longer watching", flush=True)
+
+threading.Thread(target=_server_watchdog, name="server-watchdog", daemon=True).start()
+print("[watchdog] watching the model server", flush=True)
+'''
+
+
+def apply_watchdog(cell: dict) -> None:
+    src = "".join(cell["source"])
+    if SERVER_CELL_MARKER not in src:
+        raise SystemExit(f"Cell {SERVER_CELL} is no longer the server launcher; can't add the watchdog")
+    cell["source"] = src.rstrip("\n") + "\n" + WATCHDOG_CODE
 
 
 def git(*args: str, cwd: Path) -> str:
@@ -133,6 +191,8 @@ def main() -> None:
                         help="Keep Franzen's own harness patch instead of building one from solver/.")
     parser.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
                         help="Add/override a harness setting in setup_env (repeatable).")
+    parser.add_argument("--no-watchdog", action="store_true",
+                        help="Leave out the model-server watchdog.")
     args = parser.parse_args()
 
     nb = json.loads(BASE_NOTEBOOK.read_text())
@@ -147,8 +207,13 @@ def main() -> None:
         cell["source"] = PATCH_HEADER + patch.rstrip("\n")
     if not args.full_practice:
         apply_quick_practice(nb["cells"][SETTINGS_CELL])
-    if args.set:
-        apply_env_overrides(nb["cells"][ENV_CELL], args.set)
+    overrides = list(args.set)
+    if not args.no_watchdog:
+        apply_watchdog(nb["cells"][SERVER_CELL])
+        # explicit --set values come last, so they win
+        overrides = WATCHDOG_ENV + overrides
+    if overrides:
+        apply_env_overrides(nb["cells"][ENV_CELL], overrides)
 
     for c in nb["cells"]:
         if c["cell_type"] == "code":
@@ -161,7 +226,8 @@ def main() -> None:
     practice = "full (~8 h)" if args.full_practice else f"quick ({'+'.join(QUICK_PRACTICE_GAMES)}, ~15 min)"
     print(f"[build_solver_notebook] Wrote {OUT_NOTEBOOK.relative_to(ROOT)} "
           f"(patch: {'Franzen original' if args.franzen_only else 'from solver/'}, {len(files)} files; "
-          f"practice run: {practice}; overrides: {len(args.set)})")
+          f"practice run: {practice}; watchdog: {'off' if args.no_watchdog else 'on'}; "
+          f"overrides: {len(args.set)})")
 
 
 if __name__ == "__main__":
