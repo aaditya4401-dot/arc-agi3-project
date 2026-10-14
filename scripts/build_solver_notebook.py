@@ -12,6 +12,12 @@ default the practice run ("Save & Run All", not scored) is cut from ~8 hours
 (25 games x 4 passes) to ~15 minutes (2 games x 1 pass). The scored
 competition run is never changed. Pass --full-practice to keep the long one.
 
+Two options for experiments:
+  --franzen-only   keep Franzen's own patch (no changes from solver/), so an
+                   experiment is "Franzen + one thing" against "Franzen"
+  --set KEY=VALUE  add/override a harness setting in the notebook's settings
+                   block (cell 4, `setup_env`); repeatable
+
     [edit solver/...] → python scripts/build_solver_notebook.py → upload to Kaggle
 
 Needs the original Duck repo at `reference/duck-harness` (git clone of
@@ -34,7 +40,9 @@ BASE_NOTEBOOK = ROOT / "solver" / "base-notebook.ipynb"
 OUT_NOTEBOOK = ROOT / "notebooks" / "solver-kernel" / "solver-submission.ipynb"
 PATCH_CELL = 2
 PATCH_HEADER = "%%writefile /kaggle/harness-changes.patch\n"
-SETTINGS_CELL = 16
+SETTINGS_CELL = 16  # bm.n_passes, games, time per game
+ENV_CELL = 4  # setup_env: the ARC3_* / LOCAL_ANALYZER_* harness settings
+ENV_DICT_START = "setup_env = {"
 
 # Quick practice: only the non-competition branch of the settings cell changes.
 PUBLIC_GAMES = [
@@ -101,21 +109,46 @@ def apply_quick_practice(cell: dict) -> None:
     cell["source"] = src
 
 
+def apply_env_overrides(cell: dict, overrides: list[str]) -> None:
+    """Add KEY: VALUE lines at the end of setup_env; a later key wins in a dict literal."""
+    src = "".join(cell["source"])
+    start = src.find(ENV_DICT_START)
+    end = src.find("\n}\n", start)
+    if start < 0 or end < 0:
+        raise SystemExit(f"Can't find the setup_env dict in cell {ENV_CELL}")
+    lines = ["", "    ########## experiment overrides (build_solver_notebook --set) ##########"]
+    for item in overrides:
+        key, sep, value = item.partition("=")
+        if not sep or not key.strip():
+            raise SystemExit(f"--set expects KEY=VALUE, got {item!r}")
+        lines.append(f"    {key.strip()!r}: {value.strip()!r},")
+    cell["source"] = src[:end] + "\n".join(lines) + src[end:]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--full-practice", action="store_true",
                         help="Keep the ~8 h practice run (25 games x 4 passes) instead of ~15 min.")
+    parser.add_argument("--franzen-only", action="store_true",
+                        help="Keep Franzen's own harness patch instead of building one from solver/.")
+    parser.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
+                        help="Add/override a harness setting in setup_env (repeatable).")
     args = parser.parse_args()
 
-    patch = build_patch()
     nb = json.loads(BASE_NOTEBOOK.read_text())
     cell = nb["cells"][PATCH_CELL]
     if not "".join(cell["source"]).startswith(PATCH_HEADER):
         raise SystemExit(f"Cell {PATCH_CELL} of {BASE_NOTEBOOK.name} is not the patch cell.")
-    # Franzen's cell has no trailing newline; keep the same shape.
-    cell["source"] = PATCH_HEADER + patch.rstrip("\n")
+    if args.franzen_only:
+        patch = "".join(cell["source"])[len(PATCH_HEADER):]
+    else:
+        patch = build_patch()
+        # Franzen's cell has no trailing newline; keep the same shape.
+        cell["source"] = PATCH_HEADER + patch.rstrip("\n")
     if not args.full_practice:
         apply_quick_practice(nb["cells"][SETTINGS_CELL])
+    if args.set:
+        apply_env_overrides(nb["cells"][ENV_CELL], args.set)
 
     for c in nb["cells"]:
         if c["cell_type"] == "code":
@@ -127,7 +160,8 @@ def main() -> None:
     files = [l.split(" b/")[-1] for l in patch.splitlines() if l.startswith("diff --git")]
     practice = "full (~8 h)" if args.full_practice else f"quick ({'+'.join(QUICK_PRACTICE_GAMES)}, ~15 min)"
     print(f"[build_solver_notebook] Wrote {OUT_NOTEBOOK.relative_to(ROOT)} "
-          f"(patch: {len(files)} files, {len(patch.splitlines())} lines; practice run: {practice})")
+          f"(patch: {'Franzen original' if args.franzen_only else 'from solver/'}, {len(files)} files; "
+          f"practice run: {practice}; overrides: {len(args.set)})")
 
 
 if __name__ == "__main__":
