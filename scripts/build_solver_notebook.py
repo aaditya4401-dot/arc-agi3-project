@@ -46,7 +46,6 @@ PATCH_CELL = 2
 PATCH_HEADER = "%%writefile /kaggle/harness-changes.patch\n"
 SETTINGS_CELL = 16  # bm.n_passes, games, time per game
 ENV_CELL = 4  # setup_env: the ARC3_* / LOCAL_ANALYZER_* harness settings
-ENV_DICT_START = "setup_env = {"
 
 # Quick practice: only the non-competition branch of the settings cell changes.
 PUBLIC_GAMES = [
@@ -207,20 +206,27 @@ def apply_quick_practice(cell: dict, minutes: int) -> None:
     cell["source"] = src
 
 
+ENV_APPLY_LINE = "os.environ.update({k: str(v) for k,v in setup_env.items()})"
+
+
 def apply_env_overrides(cell: dict, overrides: list[str]) -> None:
-    """Add KEY: VALUE lines at the end of setup_env; a later key wins in a dict literal."""
+    """Update setup_env just before it is exported, so overrides win.
+
+    Inserting into the dict literal is not enough: the cell later runs
+    `if USE_PRIORITY_SCHEDULING: setup_env.update({... 'ARC3_MAX_ACTIVE_STREAMS': 10 ...})`,
+    which would silently undo an override of any key it sets.
+    """
     src = "".join(cell["source"])
-    start = src.find(ENV_DICT_START)
-    end = src.find("\n}\n", start)
-    if start < 0 or end < 0:
-        raise SystemExit(f"Can't find the setup_env dict in cell {ENV_CELL}")
-    lines = ["", "    ########## experiment overrides (build_solver_notebook --set) ##########"]
+    if src.count(ENV_APPLY_LINE) != 1:
+        raise SystemExit(f"Can't find exactly one {ENV_APPLY_LINE!r} in cell {ENV_CELL}")
+    lines = ["########## experiment overrides (build_solver_notebook --set) ##########", "setup_env.update({"]
     for item in overrides:
         key, sep, value = item.partition("=")
         if not sep or not key.strip():
             raise SystemExit(f"--set expects KEY=VALUE, got {item!r}")
         lines.append(f"    {key.strip()!r}: {value.strip()!r},")
-    cell["source"] = src[:end] + "\n".join(lines) + src[end:]
+    lines += ["})", ""]
+    cell["source"] = src.replace(ENV_APPLY_LINE, "\n".join(lines) + ENV_APPLY_LINE)
 
 
 def main() -> None:
