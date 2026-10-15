@@ -73,10 +73,11 @@ SERVER_CELL = 12  # Franzen's launcher: builds `args`/`env`, starts `proc`, wait
 SERVER_CELL_MARKER = "proc = subprocess.Popen(args, env=env"
 
 # Games retry a dead endpoint (10 s backoff + HTTP retries), then give up after
-# ARC3_MAX_ANALYZER_FAILURES in a row: Franzen's 10 is ~4 minutes, but a
-# restart takes ~10 (weights, then CUDA graphs). 60 is ~25 minutes, still
-# bounded so a server that never returns cannot spin a game for hours.
-WATCHDOG_ENV = ["ARC3_MAX_ANALYZER_FAILURES=60"]
+# ARC3_MAX_ANALYZER_FAILURES in a row: Franzen's 10 is ~4 minutes. A restart
+# takes ~10 minutes with the model files re-read in parallel and ~30 without
+# (crash drill, 2026-10-15). 110 is ~45 minutes, still bounded so a server
+# that never returns cannot spin a game for hours.
+WATCHDOG_ENV = ["ARC3_MAX_ANALYZER_FAILURES=110"]
 
 # Appended to the launcher cell, so it runs after the server is up. The 2026-10-14
 # practice run lost its server to a SIGKILL 2h45m in (host-RAM spike) and every
@@ -97,6 +98,14 @@ def _restart_server(reason):
         pass
     proc.wait()
     time.sleep(15)  # let the GPU memory of the dead processes be released
+    # The first launch reads the model in ~5 min because cell 6's precache pulls
+    # the files into the page cache in parallel; alone, the loader reads them one
+    # by one from slow storage (~24 min in the crash drill). Warm them again.
+    try:
+        threading.Thread(target=precache, args=(MODEL_DIR, DRAFT_MODEL_DIR),
+                         kwargs={"threads": 8}, name="watchdog-precache", daemon=True).start()
+    except NameError:
+        print("[watchdog] precache() not defined; relaunching without it", flush=True)
     with open(LOG, "ab", buffering=0) as logf:
         proc = subprocess.Popen(args, env=env, stdout=logf, stderr=subprocess.STDOUT, start_new_session=True)
     print(f"[watchdog] relaunched as pid {proc.pid}", flush=True)
