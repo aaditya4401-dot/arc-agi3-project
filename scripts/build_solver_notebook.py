@@ -64,7 +64,7 @@ QUICK_PRACTICE_EDITS = [
     ),
     (
         "        bm.solver.max_runtime_s_per_game = 532*60 * bm.solver.concurrency // 110\n",
-        "        bm.solver.max_runtime_s_per_game = 10*60  # quick practice\n",
+        "        bm.solver.max_runtime_s_per_game = {minutes}*60  # quick practice\n",
     ),
 ]
 
@@ -100,6 +100,16 @@ def _restart_server(reason):
     with open(LOG, "ab", buffering=0) as logf:
         proc = subprocess.Popen(args, env=env, stdout=logf, stderr=subprocess.STDOUT, start_new_session=True)
     print(f"[watchdog] relaunched as pid {proc.pid}", flush=True)
+    started = time.time()
+    while time.time() - started < 30 * 60 and proc.poll() is None:
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{SERVED_MODEL_PORT}/health", timeout=5) as r:
+                if r.status == 200:
+                    print(f"[watchdog] server healthy again after {int(time.time() - started)}s", flush=True)
+                    return
+        except Exception:
+            pass
+        time.sleep(5)
 
 def _server_watchdog():
     restarts = 0
@@ -116,11 +126,32 @@ print("[watchdog] watching the model server", flush=True)
 '''
 
 
+# Practice-only crash drill: SIGKILL the server N minutes after launch so the
+# watchdog's restart can be watched on real hardware. Never in a scored rerun.
+DRILL_CODE = '''
+
+# ---- crash drill (practice runs only; added by build_solver_notebook --drill-kill-after) ----
+def _crash_drill(minutes):
+    time.sleep(minutes * 60)
+    if TRUE_SUBMISSION:
+        return
+    print(f"[drill] killing the model server (pid {proc.pid}) to test the watchdog", flush=True)
+    os.killpg(proc.pid, signal.SIGKILL)
+
+if not TRUE_SUBMISSION:
+    threading.Thread(target=_crash_drill, args=({minutes},), name="crash-drill", daemon=True).start()
+'''
+
+
 def apply_watchdog(cell: dict) -> None:
     src = "".join(cell["source"])
     if SERVER_CELL_MARKER not in src:
         raise SystemExit(f"Cell {SERVER_CELL} is no longer the server launcher; can't add the watchdog")
     cell["source"] = src.rstrip("\n") + "\n" + WATCHDOG_CODE
+
+
+def apply_drill(cell: dict, minutes: float) -> None:
+    cell["source"] = "".join(cell["source"]).rstrip("\n") + "\n" + DRILL_CODE.replace("({minutes},)", f"({minutes},)")
 
 
 def git(*args: str, cwd: Path) -> str:
@@ -158,12 +189,12 @@ def build_patch() -> str:
         return git("diff", "--cached", cwd=tmp)
 
 
-def apply_quick_practice(cell: dict) -> None:
+def apply_quick_practice(cell: dict, minutes: int) -> None:
     src = "".join(cell["source"])
     for old, new in QUICK_PRACTICE_EDITS:
         if src.count(old) != 1:
             raise SystemExit(f"Settings cell changed upstream; can't find exactly one {old.strip()!r}")
-        src = src.replace(old, new)
+        src = src.replace(old, new.replace("{minutes}", str(minutes)))
     cell["source"] = src
 
 
@@ -193,6 +224,10 @@ def main() -> None:
                         help="Add/override a harness setting in setup_env (repeatable).")
     parser.add_argument("--no-watchdog", action="store_true",
                         help="Leave out the model-server watchdog.")
+    parser.add_argument("--practice-minutes", type=int, default=10,
+                        help="Minutes per game in the quick practice run (default 10).")
+    parser.add_argument("--drill-kill-after", type=float, metavar="MINUTES",
+                        help="Practice runs only: SIGKILL the model server this long after launch.")
     args = parser.parse_args()
 
     nb = json.loads(BASE_NOTEBOOK.read_text())
@@ -206,10 +241,12 @@ def main() -> None:
         # Franzen's cell has no trailing newline; keep the same shape.
         cell["source"] = PATCH_HEADER + patch.rstrip("\n")
     if not args.full_practice:
-        apply_quick_practice(nb["cells"][SETTINGS_CELL])
+        apply_quick_practice(nb["cells"][SETTINGS_CELL], args.practice_minutes)
     overrides = list(args.set)
     if not args.no_watchdog:
         apply_watchdog(nb["cells"][SERVER_CELL])
+        if args.drill_kill_after:
+            apply_drill(nb["cells"][SERVER_CELL], args.drill_kill_after)
         # explicit --set values come last, so they win
         overrides = WATCHDOG_ENV + overrides
     if overrides:
