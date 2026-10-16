@@ -168,7 +168,7 @@ def git(*args: str, cwd: Path) -> str:
     ).stdout
 
 
-def build_patch() -> str:
+def build_patch(solver_ref: str | None = None) -> str:
     if not (DUCK_REPO / ".git").exists():
         raise SystemExit(
             f"Original Duck repo not found at {DUCK_REPO}.\n"
@@ -187,12 +187,23 @@ def build_patch() -> str:
         git("-c", "user.name=build", "-c", "user.email=build@local",
             "commit", "-qm", "duck", cwd=tmp)
 
-        # ...replace it with our solver code, and diff.
+        # ...replace it with our solver code (the working tree, or a past commit), and diff.
         shutil.rmtree(tmp / PATCHED_DIR)
-        shutil.copytree(
-            ROOT / "solver" / PATCHED_DIR, tmp / PATCHED_DIR,
-            ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
-        )
+        if solver_ref:
+            snap = tmp / "_snapshot"
+            snap.mkdir()
+            archive = subprocess.run(
+                ["git", "archive", solver_ref, f"solver/{PATCHED_DIR}"],
+                cwd=ROOT, check=True, capture_output=True,
+            ).stdout
+            subprocess.run(["tar", "-x"], cwd=snap, input=archive, check=True)
+            shutil.move(str(snap / "solver" / PATCHED_DIR), str(tmp / PATCHED_DIR))
+            shutil.rmtree(snap)
+        else:
+            shutil.copytree(
+                ROOT / "solver" / PATCHED_DIR, tmp / PATCHED_DIR,
+                ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+            )
         git("add", "-A", cwd=tmp)
         return git("diff", "--cached", cwd=tmp)
 
@@ -237,6 +248,8 @@ def main() -> None:
                         help="Keep Franzen's own harness patch instead of building one from solver/.")
     parser.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
                         help="Add/override a harness setting in setup_env (repeatable).")
+    parser.add_argument("--solver-ref", metavar="COMMIT",
+                        help="Build the patch from solver/ as of this git commit instead of the working tree.")
     parser.add_argument("--no-watchdog", action="store_true",
                         help="Leave out the model-server watchdog.")
     parser.add_argument("--practice-minutes", type=int, default=10,
@@ -252,7 +265,7 @@ def main() -> None:
     if args.franzen_only:
         patch = "".join(cell["source"])[len(PATCH_HEADER):]
     else:
-        patch = build_patch()
+        patch = build_patch(args.solver_ref)
         # Franzen's cell has no trailing newline; keep the same shape.
         cell["source"] = PATCH_HEADER + patch.rstrip("\n")
     if not args.full_practice:
@@ -277,7 +290,7 @@ def main() -> None:
     files = [l.split(" b/")[-1] for l in patch.splitlines() if l.startswith("diff --git")]
     practice = "full (~8 h)" if args.full_practice else f"quick ({'+'.join(QUICK_PRACTICE_GAMES)}, ~15 min)"
     print(f"[build_solver_notebook] Wrote {OUT_NOTEBOOK.relative_to(ROOT)} "
-          f"(patch: {'Franzen original' if args.franzen_only else 'from solver/'}, {len(files)} files; "
+          f"(patch: {'Franzen original' if args.franzen_only else 'solver/@' + (args.solver_ref or 'working tree')}, {len(files)} files; "
           f"practice run: {practice}; watchdog: {'off' if args.no_watchdog else 'on'}; "
           f"overrides: {len(args.set)})")
 
