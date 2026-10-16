@@ -37,6 +37,8 @@ from inference.agent.prompts import (
     PERSISTENT_FUNCTIONS_LINE,
     EPHEMERAL_FUNCTIONS_LINE,
     SUMMARY_REQUEST_PROMPT,
+    FRESH_EYES_REQUEST_PROMPT,
+    FRESH_EYES_NOTE_SUFFIX,
     PREFER_TOOL_CALLS_LINE,
     GAME_OVERVIEW_ADDENDUM,
     WORLD_MODEL_ADDENDUM,
@@ -1083,6 +1085,25 @@ def _apply_summary_visibility(
         if in_first_pair:
             kept.append(message)
     return kept + pending_request
+
+
+def _fresh_eyes_tokens() -> int:
+    """Generated tokens on one level, without completing it, before a fresh start. 0 disables.
+
+    Stuck games in the baseline transcripts spend their budget deepening one
+    wrong line of attack (building and debugging a simulator of the game,
+    cycling combinations), and every later turn rereads that history. Past this
+    many tokens on a level, the model writes a note on what it established and
+    what failed, and the history is replaced by that note. Unlike rolling
+    summaries this fires only on stuck levels, so it costs a few requests per
+    game. The priority scheduler's token falloff halves a level's completion
+    odds at ~62k tokens, which is where a reset is worth its cost.
+    """
+    return max(0, _get_env_int("ARC3_FRESH_EYES_TOKENS", 0))
+
+
+def _fresh_eyes_max_per_level() -> int:
+    return max(0, _get_env_int("ARC3_FRESH_EYES_MAX_PER_LEVEL", 2))
 
 
 def _summary_replaces_history() -> bool:
@@ -6050,6 +6071,84 @@ class ToolAgent:
             getattr(self, "_summary_context_tokens_since_attempt", 0) + added
         )
 
+    def _maybe_fresh_eyes_reset(
+        self, append_transcript, tools: list[dict[str, Any]] | None,
+        *, request_timeout_seconds: float | None = None,
+    ) -> None:
+        """Clear a stuck level's history down to a self-written note. See _fresh_eyes_tokens.
+
+        Runs at turn start, like the rolling summary and for the same reason:
+        nothing is in flight. Reuses its request shape and control tag, so the
+        trimmer and the wire filters treat the note like a summary. Every
+        attempt, successful or not, restarts the token clock, so a failed note
+        is retried only after another full threshold.
+        """
+        threshold = _fresh_eyes_tokens()
+        if threshold <= 0 or not self._history_messages:
+            return
+        level_start = getattr(self, "_tokens_at_level_start", 0)
+        if getattr(self, "_fresh_eyes_level_start", None) != level_start:
+            # a new level (or the first check): restart the per-level bookkeeping
+            self._fresh_eyes_level_start = level_start
+            self._fresh_eyes_count = 0
+            self._fresh_eyes_clock = level_start
+        if self._fresh_eyes_count >= _fresh_eyes_max_per_level():
+            return
+        spent = self._session_generated_tokens - self._fresh_eyes_clock
+        if spent < threshold:
+            return
+        self._fresh_eyes_clock = self._session_generated_tokens
+        self._fresh_eyes_count += 1
+        request = _mark_control_message(
+            {"role": "user", "content": FRESH_EYES_REQUEST_PROMPT},
+            _SUMMARY_CONTROL_KIND,
+        )
+        messages = [
+            {"role": "system", "content": self._system_prompt},
+            *self._history_messages,
+            request,
+        ]
+        try:
+            result = self._chat_completion(
+                messages,
+                tools=tools,
+                max_tokens=_summary_max_gen_tokens(self._max_output_tokens),
+                enable_thinking=_summary_enable_thinking(),
+                request_timeout_seconds=request_timeout_seconds,
+            )
+        except BaseException as exc:  # a failed note must not end the turn
+            log.warning("fresh-eyes note request failed: %s", exc)
+            return
+        self._accumulate_usage_tokens(
+            getattr(result, "usage", None), count_toward_turn=False
+        )
+        message = result.message or {}
+        text = _normalize_message_content(message.get("content", "")).strip()
+        if len(text) < _SUMMARY_MIN_USABLE_CHARS:
+            # empty, or a short preamble to a tool call: keep the history rather
+            # than replace it with something that cannot stand in for it
+            log.warning(
+                "fresh-eyes note unusable (%d chars, tool calls: %s); keeping history",
+                len(text), bool(message.get("tool_calls")),
+            )
+            return
+        if str(getattr(result, "finish_reason", "")).strip() == "length":
+            text = f"{text}\n[This note was cut off at the output limit and is incomplete.]"
+        reply = _mark_control_message(
+            {"role": "assistant", "content": text + FRESH_EYES_NOTE_SUFFIX},
+            _SUMMARY_CONTROL_KIND,
+        )
+        replaced = len(self._history_messages)
+        self._history_messages = [request, reply]
+        self._note_history_evicted()
+        append_transcript(
+            "ANALYZER STATUS",
+            f"fresh_eyes: reset #{self._fresh_eyes_count} on this level after {spent} "
+            f"generated tokens without completing it; {len(text)} chars of note "
+            f"replaced {replaced} messages of history",
+        )
+        append_transcript("FRESH EYES NOTE", text)
+
     def _maybe_append_rolling_summary(
         self, append_transcript, tools: list[dict[str, Any]] | None,
         *, request_timeout_seconds: float | None = None,
@@ -6650,6 +6749,10 @@ class ToolAgent:
         # reply that calls a tool, are what keep it from acting - not withholding
         # the definitions.
         self._maybe_append_rolling_summary(
+            append_transcript, self._tools(state_path),
+            request_timeout_seconds=request_timeout_seconds,
+        )
+        self._maybe_fresh_eyes_reset(
             append_transcript, self._tools(state_path),
             request_timeout_seconds=request_timeout_seconds,
         )

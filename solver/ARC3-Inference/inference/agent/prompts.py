@@ -1,6 +1,12 @@
 """Prompt templates for the analyzer agent."""
 
+import os
+
 from inference.utils.grid_utils import ARC_COLOR_LEGEND
+
+
+def _env_on(name: str, default: str) -> bool:
+    return os.environ.get(name, default).strip().lower() in {"1", "on", "true", "yes"}
 
 LEVEL_TRANSFER_SYSTEM_GUIDANCE = (
     "- Levels usually build on mechanics learned in earlier levels, especially the most "
@@ -64,17 +70,16 @@ TOOL_CALL_FORMAT_GUIDANCE = (
     "Do not quote or place tool-call markup inside explanatory text; when you decide to call the tool, emit the tool call itself."
 )
 
-GAME_OVERVIEW_ADDENDUM = (
-    "\n\nGame overview:\n"
-    "- You are solving a multi-level grid puzzle game. \n"
-    "- You are called repeatedly over the course of a run. Treat each turn as one observe-plan-act cycle: re-understand the current state from the newest frame, update your working world model in Python, choose the next best action or short sequence against the goal as currently understood, execute it, and expect to re-evaluate on the next turn from the updated state.\n"
-    "- Your job is to solve the entire game by clearing every level, not just the current screen.\n"
-    "- Levels often build on earlier mechanics, but layouts and interactions can still change between levels.\n"
-    "- Optimize for as few in-game actions as possible while still being reliable.\n"
+# Our additions to the game overview (see CHANGES.md), each behind a switch so an
+# experiment can run Franzen's prompt unchanged: ARC3_LEVEL_WEIGHT_HINT, ARC3_CHEAT_SHEET.
+LEVEL_WEIGHT_HINT = (
     "- Level weighting: level k counts k times in the game score (level 1 x1, level 2 x2, ...), so in a 7-level game "
     "level 1 is under 4% of the score while the last three levels are over half. On level 1, extra actions are cheap: "
     "spend them to learn what the controls and objects do. If an automatic probe report is shown, it has already tried "
     "each control once; build on it rather than repeating it. From level 2 on, rely on what you learned and be efficient.\n"
+)
+
+MECHANICS_CHEAT_SHEET = (
     "- Common patterns in these games. Treat them as hypotheses to test early, not as facts:\n"
     "  - Find the reference first. Many levels show the target somewhere: a small side panel, a HUD strip, a top row, or an example pair. "
     "The goal is often to make the play area match it. Check for one before guessing other goals.\n"
@@ -87,7 +92,18 @@ GAME_OVERVIEW_ADDENDUM = (
     "  - Level 1 is a tutorial: the simplest version of the rule. Once it is solved, state exactly what the win condition was; "
     "later levels usually keep it and add one new element.\n"
     "  - A level completes automatically as soon as its condition is met; there is usually no separate submit action.\n"
-    "- In this environment, boards are presented as 64 x 64 color grids rendered with ARC color symbols.\n"
+)
+
+GAME_OVERVIEW_ADDENDUM = (
+    "\n\nGame overview:\n"
+    "- You are solving a multi-level grid puzzle game. \n"
+    "- You are called repeatedly over the course of a run. Treat each turn as one observe-plan-act cycle: re-understand the current state from the newest frame, update your working world model in Python, choose the next best action or short sequence against the goal as currently understood, execute it, and expect to re-evaluate on the next turn from the updated state.\n"
+    "- Your job is to solve the entire game by clearing every level, not just the current screen.\n"
+    "- Levels often build on earlier mechanics, but layouts and interactions can still change between levels.\n"
+    "- Optimize for as few in-game actions as possible while still being reliable.\n"
+    + (LEVEL_WEIGHT_HINT if _env_on("ARC3_LEVEL_WEIGHT_HINT", "1") else "")
+    + (MECHANICS_CHEAT_SHEET if _env_on("ARC3_CHEAT_SHEET", "1") else "")
+    + "- In this environment, boards are presented as 64 x 64 color grids rendered with ARC color symbols.\n"
     f"- Color legend: {ARC_COLOR_LEGEND}.\n"
 )
 
@@ -344,6 +360,24 @@ COMPACT_TOOL_SESSION_ADDENDUM = (
     "- Keep code snippets short and purpose-built rather than dumping large frameworks into one call.\n"
 )
 
+
+FRESH_EYES_REQUEST_PROMPT = (
+    "You have spent a long time on this level without completing it. That usually means the current line "
+    "of attack rests on an assumption that is wrong. Your conversation history is about to be cleared so "
+    "you can look at this level with fresh eyes, and the note you write now is the only thing that will "
+    "remain. Write it for your fresh self:\n"
+    "1. Facts confirmed by evidence: what each action and each kind of object does, and how you know.\n"
+    "2. Every goal hypothesis you tested, and the evidence that ruled it out.\n"
+    "3. Approaches that wasted actions or caused a game over, so they are not repeated.\n"
+    "4. Ideas you have not tried yet, especially ones that question an assumption you never tested.\n"
+    "Keep facts and guesses clearly apart. Do not act and do not call any tool - write the note only."
+)
+
+FRESH_EYES_NOTE_SUFFIX = (
+    "\n\n[Fresh start: everything before this note was cleared to give you fresh eyes on this level. "
+    "Re-examine the current board with an open mind, and question the assumptions above before "
+    "resuming any earlier plan.]"
+)
 
 SUMMARY_REQUEST_PROMPT = (
     "Summarize everything above: what you have established about this game, what you have "

@@ -21,7 +21,7 @@ from typing import Any, Callable, Optional
 
 Grid = tuple[tuple[int, ...], ...]
 
-ENABLED = os.environ.get("ARC3_AUTO_PROBE", "on").strip().lower() in {"1", "on", "true", "yes"}
+ENABLED = os.environ.get("ARC3_AUTO_PROBE", "off").strip().lower() in {"1", "on", "true", "yes"}
 MAX_ACTIONS = max(0, int(os.environ.get("ARC3_AUTO_PROBE_MAX_ACTIONS", "12")))
 MAX_CLICKS = max(0, int(os.environ.get("ARC3_AUTO_PROBE_MAX_CLICKS", "6")))
 # Same edge band the harness treats as HUD/timer territory.

@@ -37,6 +37,7 @@ ROOT = Path(__file__).resolve().parents[1]
 NOTEBOOK = ROOT / "solver" / "base-notebook.ipynb"
 SETTINGS_CELL = 4
 SUMMARY_MARKER = "Summarize everything above"
+FRESH_EYES_MARKER = "look at this level with fresh eyes"
 
 # The competition window is 128k with a 58k drain; a fake game is ~60 turns,
 # so scale memory down ~4x to see several trims.
@@ -72,7 +73,8 @@ class FakeModel(BaseHTTPRequestHandler):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         messages = body.get("messages") or []
         last_user = next((m for m in reversed(messages) if m.get("role") == "user"), {})
-        is_summary = SUMMARY_MARKER in json.dumps(last_user.get("content"))
+        last_text = json.dumps(last_user.get("content"))
+        is_summary = SUMMARY_MARKER in last_text or FRESH_EYES_MARKER in last_text
         with self.lock:
             with open(self.log_path, "a") as f:
                 f.write(json.dumps({"summary": is_summary, "messages": [json.dumps(m, sort_keys=True) for m in messages]}) + "\n")
